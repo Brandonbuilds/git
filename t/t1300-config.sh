@@ -1220,6 +1220,7 @@ test_expect_success 'old-fashioned settings are case insensitive' '
 	q_to_tab >testConfig_expect <<-EOF &&
 		[V.A]
 		r = value1
+		[V "A"]
 		Qr = value2
 	EOF
 	git config -f testConfig_actual "V.A.r" value2 &&
@@ -1232,6 +1233,7 @@ test_expect_success 'old-fashioned settings are case insensitive' '
 	q_to_tab >testConfig_expect <<-EOF &&
 		[V.A]
 		r = value1
+		[v "A"]
 		Qr = value2
 	EOF
 	git config -f testConfig_actual "v.A.r" value2 &&
@@ -1260,6 +1262,7 @@ test_expect_success 'setting different case sensitive subsections ' '
 		Qc = v2
 		[d "e"]
 		f = v1
+		[d "E"]
 		Qf = v2
 	EOF
 	# exact match
