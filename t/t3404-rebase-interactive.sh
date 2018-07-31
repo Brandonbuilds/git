@@ -75,6 +75,22 @@ test_expect_success 'rebase --keep-empty' '
 	test_line_count = 6 actual
 '
 
+SQ="'"
+test_expect_success 'rebase -i writes correct author-script' '
+	test_when_finished "test_might_fail git rebase --abort" &&
+	git checkout -b author-with-sq master &&
+	GIT_AUTHOR_NAME="Auth O$SQ R" git commit --allow-empty -m with-sq &&
+	set_fake_editor &&
+	FAKE_LINES="edit 1" git rebase -ki HEAD^ &&
+	tail -n1 .git/rebase-merge/author-script | grep "$SQ\$" &&
+	(
+		sane_unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE &&
+		. .git/rebase-merge/author-script &&
+		test "$(git show -s --date=raw --format=%an,%ae,@%ad)" = \
+			"Auth O$SQ R,$GIT_AUTHOR_EMAIL,$GIT_AUTHOR_DATE"
+	)
+'
+
 test_expect_success 'rebase -i with the exec command' '
 	git checkout master &&
 	(
@@ -1247,7 +1263,7 @@ rebase_setup_and_clean () {
 		test_might_fail git branch -D $1 &&
 		test_might_fail git rebase --abort
 	" &&
-	git checkout -b $1 master
+	git checkout -b $1 ${2:-master}
 }
 
 test_expect_success 'drop' '
@@ -1406,7 +1422,6 @@ test_expect_success 'editor saves as CR/LF' '
 	)
 '
 
-SQ="'"
 test_expect_success 'rebase -i --gpg-sign=<key-id>' '
 	test_when_finished "test_might_fail git rebase --abort" &&
 	set_fake_editor &&
@@ -1422,6 +1437,14 @@ test_expect_success 'rebase -i --gpg-sign=<key-id> overrides commit.gpgSign' '
 	FAKE_LINES="edit 1" git rebase -i --gpg-sign="\"S I Gner\"" HEAD^ \
 		>out 2>err &&
 	test_i18ngrep "$SQ-S\"S I Gner\"$SQ" err
+'
+
+test_expect_success 'valid author header after --root swap' '
+	rebase_setup_and_clean author-header no-conflict-branch &&
+	set_fake_editor &&
+	FAKE_LINES="2 1" git rebase -i --root &&
+	git cat-file commit HEAD^ >out &&
+	grep "^author ..*> [0-9][0-9]* [-+][0-9][0-9][0-9][0-9]$" out
 '
 
 test_done

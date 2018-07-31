@@ -639,7 +639,7 @@ missing_author:
 		else if (*message != '\'')
 			strbuf_addch(&buf, *(message++));
 		else
-			strbuf_addf(&buf, "'\\\\%c'", *(message++));
+			strbuf_addf(&buf, "'\\%c'", *(message++));
 	strbuf_addstr(&buf, "'\nGIT_AUTHOR_EMAIL='");
 	while (*message && *message != '\n' && *message != '\r')
 		if (skip_prefix(message, "> ", &message))
@@ -647,13 +647,14 @@ missing_author:
 		else if (*message != '\'')
 			strbuf_addch(&buf, *(message++));
 		else
-			strbuf_addf(&buf, "'\\\\%c'", *(message++));
+			strbuf_addf(&buf, "'\\%c'", *(message++));
 	strbuf_addstr(&buf, "'\nGIT_AUTHOR_DATE='@");
 	while (*message && *message != '\n' && *message != '\r')
 		if (*message != '\'')
 			strbuf_addch(&buf, *(message++));
 		else
-			strbuf_addf(&buf, "'\\\\%c'", *(message++));
+			strbuf_addf(&buf, "'\\%c'", *(message++));
+	strbuf_addch(&buf, '\'');
 	res = write_message(buf.buf, buf.len, rebase_path_author_script(), 1);
 	strbuf_release(&buf);
 	return res;
@@ -666,14 +667,25 @@ missing_author:
 static int read_env_script(struct argv_array *env)
 {
 	struct strbuf script = STRBUF_INIT;
-	int i, count = 0;
-	char *p, *p2;
+	int i, count = 0, sq_bug;
+	const char *p2;
+	char *p;
 
 	if (strbuf_read_file(&script, rebase_path_author_script(), 256) <= 0)
 		return -1;
 
+	/*
+	 * write_author_script() used to fail to terminate the GIT_AUTHOR_DATE
+	 * line with a "'" and also escaped "'" incorrectly as "'\\\\''" rather
+	 * than "'\\''". We check for the terminating "'" on the last line to
+	 * see how "'" has been escaped in case git was upgraded while rebase
+	 * was stopped.
+	 */
+	sq_bug = script.len && script.buf[script.len - 2] != '\'';
 	for (p = script.buf; *p; p++)
-		if (skip_prefix(p, "'\\\\''", (const char **)&p2))
+		if (sq_bug && skip_prefix(p, "'\\\\''", &p2))
+			strbuf_splice(&script, p - script.buf, p2 - p, "'", 1);
+		else if (skip_prefix(p, "'\\''", &p2))
 			strbuf_splice(&script, p - script.buf, p2 - p, "'", 1);
 		else if (*p == '\'')
 			strbuf_splice(&script, p-- - script.buf, 1, "", 0);
@@ -703,49 +715,58 @@ static char *get_author(const char *message)
 }
 
 /* Read author-script and return an ident line (author <email> timestamp) */
-static const char *read_author_ident(struct strbuf *buf)
+static int read_author_ident(char **author)
 {
 	const char *keys[] = {
 		"GIT_AUTHOR_NAME=", "GIT_AUTHOR_EMAIL=", "GIT_AUTHOR_DATE="
 	};
-	char *in, *out, *eol;
-	int i = 0, len;
+	struct strbuf buf = STRBUF_INIT;
+	struct strbuf out = STRBUF_INIT;
+	char *in, *eol;
+	const char *val[3];
+	int i = 0;
 
-	if (strbuf_read_file(buf, rebase_path_author_script(), 256) <= 0)
-		return NULL;
+	if (strbuf_read_file(&buf, rebase_path_author_script(), 256) <= 0)
+		return -1;
 
 	/* dequote values and construct ident line in-place */
-	for (in = out = buf->buf; i < 3 && in - buf->buf < buf->len; i++) {
+	for (in = buf.buf; i < 3 && in - buf.buf < buf.len; i++) {
 		if (!skip_prefix(in, keys[i], (const char **)&in)) {
-			warning(_("could not parse '%s' (looking for '%s'"),
-				rebase_path_author_script(), keys[i]);
-			return NULL;
+			strbuf_release(&buf);
+			return error(_("could not parse '%s' (looking for '%s'"),
+				     rebase_path_author_script(), keys[i]);
 		}
-
 		eol = strchrnul(in, '\n');
 		*eol = '\0';
-		sq_dequote(in);
-		len = strlen(in);
-
-		if (i > 0) /* separate values by spaces */
-			*(out++) = ' ';
-		if (i == 1) /* email needs to be surrounded by <...> */
-			*(out++) = '<';
-		memmove(out, in, len);
-		out += len;
-		if (i == 1) /* email needs to be surrounded by <...> */
-			*(out++) = '>';
+		if (!sq_dequote(in)) {
+			strbuf_release(&buf);
+			return error(_("bad quoting on %s value in '%s'"),
+				     keys[i], rebase_path_author_script());
+		}
+		val[i] = in;
 		in = eol + 1;
 	}
 
 	if (i < 3) {
-		warning(_("could not parse '%s' (looking for '%s')"),
-			rebase_path_author_script(), keys[i]);
-		return NULL;
+		strbuf_release(&buf);
+		return error(_("could not parse '%s' (looking for '%s')"),
+			     rebase_path_author_script(), keys[i]);
 	}
 
-	buf->len = out - buf->buf;
-	return buf->buf;
+	/* validate date since fmt_ident() will die() on bad value */
+	if (parse_date(val[2], &out)){
+		error(_("invalid date format '%s' in '%s'"),
+			val[2], rebase_path_author_script());
+		strbuf_release(&out);
+		strbuf_release(&buf);
+		return -1;
+	}
+
+	strbuf_reset(&out);
+	strbuf_addstr(&out, fmt_ident(val[0], val[1], val[2], 0));
+	*author = strbuf_detach(&out, NULL);
+	strbuf_release(&buf);
+	return 0;
 }
 
 static const char staged_changes_advice[] =
@@ -788,11 +809,13 @@ static int run_git_commit(const char *defmsg, struct replay_opts *opts,
 	const char *value;
 
 	if ((flags & CREATE_ROOT_COMMIT) && !(flags & AMEND_MSG)) {
-		struct strbuf msg = STRBUF_INIT, script = STRBUF_INIT;
-		const char *author = is_rebase_i(opts) ?
-			read_author_ident(&script) : NULL;
+		struct strbuf msg = STRBUF_INIT;
+		char *author = NULL;
 		struct object_id root_commit, *cache_tree_oid;
 		int res = 0;
+
+		if (is_rebase_i(opts) && read_author_ident(&author))
+			return -1;
 
 		if (!defmsg)
 			BUG("root commit without message");
@@ -811,7 +834,7 @@ static int run_git_commit(const char *defmsg, struct replay_opts *opts,
 					  opts->gpg_sign);
 
 		strbuf_release(&msg);
-		strbuf_release(&script);
+		free(author);
 		if (!res) {
 			update_ref(NULL, "CHERRY_PICK_HEAD", &root_commit, NULL,
 				   REF_NO_DEREF, UPDATE_REFS_MSG_ON_ERR);
