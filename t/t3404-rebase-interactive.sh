@@ -75,6 +75,22 @@ test_expect_success 'rebase --keep-empty' '
 	test_line_count = 6 actual
 '
 
+SQ="'"
+test_expect_success 'rebase -i writes correct author-script' '
+	test_when_finished "test_might_fail git rebase --abort" &&
+	git checkout -b author-with-sq master &&
+	GIT_AUTHOR_NAME="Auth O$SQ R" git commit --allow-empty -m with-sq &&
+	set_fake_editor &&
+	FAKE_LINES="edit 1" git rebase -ki HEAD^ &&
+	tail -n1 .git/rebase-merge/author-script | grep "$SQ\$" &&
+	(
+		sane_unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE &&
+		. .git/rebase-merge/author-script &&
+		test "$(git show -s --date=raw --format=%an,%ae,@%ad)" = \
+			"Auth O$SQ R,$GIT_AUTHOR_EMAIL,$GIT_AUTHOR_DATE"
+	)
+'
+
 test_expect_success 'rebase -i with the exec command' '
 	git checkout master &&
 	(
@@ -1361,7 +1377,6 @@ test_expect_success 'editor saves as CR/LF' '
 	)
 '
 
-SQ="'"
 test_expect_success 'rebase -i --gpg-sign=<key-id>' '
 	test_when_finished "test_might_fail git rebase --abort" &&
 	set_fake_editor &&
