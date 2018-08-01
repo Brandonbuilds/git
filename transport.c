@@ -1231,17 +1231,18 @@ int transport_fetch_refs(struct transport *transport, struct ref *refs,
 	struct ref **heads = NULL;
 	struct ref *nop_head = NULL, **nop_tail = &nop_head;
 	struct ref *rm;
+	struct ref *fetched_by_transport = NULL;
 
 	for (rm = refs; rm; rm = rm->next) {
 		nr_refs++;
 		if (rm->peer_ref &&
 		    !is_null_oid(&rm->old_oid) &&
 		    !oidcmp(&rm->peer_ref->old_oid, &rm->old_oid)) {
-			/*
-			 * These need to be reported as fetched, but we don't
-			 * actually need to fetch them.
-			 */
 			if (fetched_refs) {
+				/*
+				 * These may need to be reported as fetched,
+				 * but we don't actually need to fetch them.
+				 */
 				struct ref *nop_ref = copy_ref(rm);
 				*nop_tail = nop_ref;
 				nop_tail = &nop_ref->next;
@@ -1265,10 +1266,25 @@ int transport_fetch_refs(struct transport *transport, struct ref *refs,
 			heads[nr_heads++] = rm;
 	}
 
-	rc = transport->vtable->fetch(transport, nr_heads, heads, fetched_refs);
-	if (fetched_refs && nop_head) {
-		*nop_tail = *fetched_refs;
-		*fetched_refs = nop_head;
+	rc = transport->vtable->fetch(transport, nr_heads, heads,
+				      fetched_refs ? &fetched_by_transport : NULL);
+	if (fetched_refs) {
+		if (fetched_by_transport) {
+			/*
+			 * The transport reported its fetched refs. Pretend
+			 * that we also fetched the ones that we didn't need to
+			 * fetch.
+			 */
+			*nop_tail = fetched_by_transport;
+			*fetched_refs = nop_head;
+		} else if (!fetched_by_transport) {
+			/*
+			 * The transport didn't report its fetched refs, so
+			 * this function will not report them either. We have
+			 * no use for nop_head.
+			 */
+			free_refs(nop_head);
+		}
 	}
 
 	free(heads);
